@@ -63,6 +63,7 @@ output/
 # Test files
 test_documents/
 tests/test_output/
+_OLD_FILES/test_output/
 
 # Documents demo (non pubblicare)
 documents demo/
