@@ -1,0 +1,1639 @@
+# TODO Tecnico - Traduttore Documenti Legali Offline (PDF/DOC)
+
+## 🎯 STACK TECNOLOGICO
+
+### **GUI Framework**
+- **PyQt6** / PySide6 - GUI nativa cross-platform
+
+### **Estrazione Testo**
+- **PyMuPDF** (fitz) - Estrazione da PDF
+- **python-docx** - Lettura DOCX
+- **mammoth** - DOC → HTML → testo
+
+### **Traduzione Offline** 
+- **Argos Translate** - Modelli NMT offline (raccomandato)
+- **MarianMT** (Hugging Face) - Alternativa più pesante
+- **NLLB-200** (Meta) - 200 lingue, molto pesante
+
+### **Gestione Layout**
+- **ReportLab** - Generazione PDF output
+- **python-docx** - Generazione DOCX output
+
+---
+
+## 📁 Struttura Progetto
+
+```
+legal-translator-offline/
+├── src/
+│   ├── main.py                        # Entry point
+│   ├── ui/
+│   │   ├── main_window.py             # Finestra principale
+│   │   ├── settings_dialog.py         # Impostazioni lingue
+│   │   ├── preview_widget.py          # Anteprima documento
+│   │   └── progress_dialog.py         # Dialog progresso dettagliato
+│   │
+│   ├── translation/
+│   │   ├── engine.py                  # Engine traduzione
+│   │   ├── chunker.py                 # Split documenti lunghi
+│   │   ├── models_manager.py          # Download/gestione modelli
+│   │   └── glossary.py                # Terminologia legale custom
+│   │
+│   ├── extraction/
+│   │   ├── pdf_extractor.py           # Estrae testo da PDF
+│   │   ├── docx_extractor.py          # Estrae testo da DOCX
+│   │   └── layout_preserver.py        # Mantiene formattazione
+│   │
+│   ├── generation/
+│   │   ├── pdf_generator.py           # Crea PDF tradotto
+│   │   ├── docx_generator.py          # Crea DOCX tradotto
+│   │   └── formatter.py               # Formattazione output
+│   │
+│   ├── workers/
+│   │   └── translation_worker.py      # Thread background
+│   │
+│   └── utils/
+│       ├── config.py                  # Configurazione
+│       ├── logger.py                  # Logging
+│       └── cache.py                   # Cache traduzioni
+│
+├── models/                            # Modelli traduzione offline
+│   ├── en-it/                         # Inglese → Italiano
+│   ├── it-en/
+│   ├── en-es/
+│   └── ...
+│
+├── glossaries/                        # Terminologia legale
+│   ├── legal_en_it.json
+│   └── legal_it_en.json
+│
+├── resources/
+│   ├── icons/
+│   └── styles/
+│
+├── tests/
+│   ├── test_documents/                # PDF/DOCX di test
+│   └── test_translation.py
+│
+├── requirements.txt
+├── build.spec
+└── README.md
+```
+
+---
+
+## 🚀 FASE 1: Setup Ambiente Python
+
+### ✅ requirements.txt
+```txt
+# GUI
+PyQt6==6.6.1
+PyQt6-Qt6==6.6.1
+
+# Estrazione testo
+PyMuPDF==1.23.26
+python-docx==1.1.0
+mammoth==1.6.0
+pdfplumber==0.10.3
+
+# Traduzione offline
+argostranslate==1.9.1
+argostranslatefiles==1.1.1
+
+# Alternativa: Hugging Face (più pesante)
+# transformers==4.36.2
+# sentencepiece==0.1.99
+# torch==2.1.2
+
+# Generazione output
+reportlab==4.0.7
+fpdf2==2.7.6
+
+# Utilities
+tqdm==4.66.1
+langdetect==1.0.9
+```
+
+### ✅ Setup iniziale
+```bash
+# Crea virtual environment
+python3 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate   # Windows
+
+# Installa dipendenze
+pip install -r requirements.txt
+
+# Download modelli traduzione (esempio)
+python -c "
+import argostranslate.package
+argostranslate.package.update_package_index()
+available_packages = argostranslate.package.get_available_packages()
+
+# Inglese → Italiano
+pkg = next(filter(lambda x: x.from_code == 'en' and x.to_code == 'it', available_packages))
+argostranslate.package.install_from_path(pkg.download())
+
+# Italiano → Inglese
+pkg = next(filter(lambda x: x.from_code == 'it' and x.to_code == 'en', available_packages))
+argostranslate.package.install_from_path(pkg.download())
+"
+```
+
+**Repo essenziali:**
+- [`argosopentech/argos-translate`](https://github.com/argosopentech/argos-translate) ⭐ Traduzione offline
+- [`pymupdf/PyMuPDF`](https://github.com/pymupdf/PyMuPDF) - PDF processing
+- [`python-openxml/python-docx`](https://github.com/python-openxml/python-docx) - DOCX
+- [`jbarlow83/pdfplumber`](https://github.com/jbarlow83/pdfplumber) - Estrazione avanzata PDF
+
+---
+
+## 📄 FASE 2: Estrazione Testo da PDF/DOC
+
+### ✅ src/extraction/pdf_extractor.py
+```python
+import fitz  # PyMuPDF
+from typing import List, Dict
+import logging
+
+logger = logging.getLogger(__name__)
+
+class PDFExtractor:
+    """Estrae testo da PDF preservando struttura"""
+    
+    def extract_text_with_layout(self, pdf_path: str, progress_callback=None) -> List[Dict]:
+        """
+        Estrae testo pagina per pagina con metadati layout
+        
+        Returns:
+            List[Dict]: [{
+                'page_num': int,
+                'text': str,
+                'blocks': List[Dict],  # Blocchi di testo con posizioni
+                'images': List[Dict]
+            }]
+        """
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+        pages_data = []
+        
+        logger.info(f"Estrazione da PDF: {total_pages} pagine")
+        
+        for page_num, page in enumerate(doc, 1):
+            if progress_callback:
+                progress_callback(page_num, total_pages, f"Estrazione pagina {page_num}/{total_pages}")
+            
+            # Estrai testo con posizioni
+            blocks = page.get_text("dict")["blocks"]
+            
+            # Testo completo della pagina
+            page_text = page.get_text("text")
+            
+            # Metadati immagini (se presenti)
+            images = page.get_images()
+            
+            pages_data.append({
+                'page_num': page_num,
+                'text': page_text,
+                'blocks': blocks,
+                'images': images,
+                'width': page.rect.width,
+                'height': page.rect.height
+            })
+        
+        doc.close()
+        logger.info(f"Estratte {total_pages} pagine")
+        return pages_data
+    
+    def extract_simple(self, pdf_path: str) -> str:
+        """Estrazione semplice tutto il testo"""
+        doc = fitz.open(pdf_path)
+        text = ""
+        for page in doc:
+            text += page.get_text() + "\n\n"
+        doc.close()
+        return text
+```
+
+### ✅ src/extraction/docx_extractor.py
+```python
+from docx import Document
+from typing import List, Dict
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DOCXExtractor:
+    """Estrae testo da DOCX preservando struttura"""
+    
+    def extract_with_structure(self, docx_path: str, progress_callback=None) -> List[Dict]:
+        """
+        Estrae testo preservando paragrafi e stili
+        
+        Returns:
+            List[Dict]: [{
+                'type': 'paragraph' | 'heading' | 'table',
+                'text': str,
+                'style': str,
+                'level': int  # per heading
+            }]
+        """
+        doc = Document(docx_path)
+        total_elements = len(doc.paragraphs) + len(doc.tables)
+        elements = []
+        processed = 0
+        
+        # Paragrafi e heading
+        for para in doc.paragraphs:
+            processed += 1
+            if progress_callback:
+                progress_callback(processed, total_elements, "Estrazione contenuto")
+            
+            if not para.text.strip():
+                continue
+            
+            element = {
+                'type': 'heading' if para.style.name.startswith('Heading') else 'paragraph',
+                'text': para.text,
+                'style': para.style.name,
+                'bold': para.runs[0].bold if para.runs else False,
+                'italic': para.runs[0].italic if para.runs else False
+            }
+            
+            if element['type'] == 'heading':
+                element['level'] = int(para.style.name[-1]) if para.style.name[-1].isdigit() else 1
+            
+            elements.append(element)
+        
+        # Tabelle
+        for table in doc.tables:
+            processed += 1
+            if progress_callback:
+                progress_callback(processed, total_elements, "Estrazione tabelle")
+            
+            table_text = []
+            for row in table.rows:
+                row_text = [cell.text for cell in row.cells]
+                table_text.append(row_text)
+            
+            elements.append({
+                'type': 'table',
+                'text': str(table_text),  # Serializzato
+                'rows': len(table.rows),
+                'cols': len(table.columns)
+            })
+        
+        logger.info(f"Estratti {len(elements)} elementi")
+        return elements
+    
+    def extract_simple(self, docx_path: str) -> str:
+        """Estrazione semplice tutto il testo"""
+        doc = Document(docx_path)
+        return "\n".join([para.text for para in doc.paragraphs])
+```
+
+---
+
+## 🌍 FASE 3: Engine Traduzione Offline
+
+### ✅ src/translation/engine.py
+```python
+import argostranslate.package
+import argostranslate.translate
+from typing import List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class TranslationEngine:
+    """Engine traduzione offline con Argos Translate"""
+    
+    def __init__(self):
+        self.installed_languages = None
+        self._load_installed_languages()
+    
+    def _load_installed_languages(self):
+        """Carica lingue installate"""
+        self.installed_languages = argostranslate.translate.get_installed_languages()
+        logger.info(f"Lingue installate: {len(self.installed_languages)}")
+    
+    def is_language_pair_available(self, from_code: str, to_code: str) -> bool:
+        """Verifica se coppia lingue è disponibile"""
+        from_lang = next((l for l in self.installed_languages if l.code == from_code), None)
+        if not from_lang:
+            return False
+        
+        to_lang = next((l for l in from_lang.translations_to if l.code == to_code), None)
+        return to_lang is not None
+    
+    def translate_text(self, text: str, from_code: str, to_code: str) -> str:
+        """Traduci singolo testo"""
+        from_lang = next((l for l in self.installed_languages if l.code == from_code), None)
+        if not from_lang:
+            raise ValueError(f"Lingua source non disponibile: {from_code}")
+        
+        translation = from_lang.get_translation(to_code)
+        if not translation:
+            raise ValueError(f"Traduzione {from_code}→{to_code} non disponibile")
+        
+        return translation.translate(text)
+    
+    def translate_chunks(
+        self, 
+        chunks: List[str], 
+        from_code: str, 
+        to_code: str,
+        progress_callback=None
+    ) -> List[str]:
+        """Traduci lista di chunk con progress"""
+        translated = []
+        total = len(chunks)
+        
+        from_lang = next((l for l in self.installed_languages if l.code == from_code), None)
+        translation = from_lang.get_translation(to_code)
+        
+        for i, chunk in enumerate(chunks, 1):
+            if progress_callback:
+                progress_callback(i, total, f"Traduzione chunk {i}/{total}")
+            
+            if not chunk.strip():
+                translated.append(chunk)
+                continue
+            
+            try:
+                translated_chunk = translation.translate(chunk)
+                translated.append(translated_chunk)
+            except Exception as e:
+                logger.error(f"Errore traduzione chunk {i}: {e}")
+                translated.append(chunk)  # Fallback: testo originale
+        
+        return translated
+    
+    def get_available_languages(self) -> List[Dict]:
+        """Lista lingue disponibili"""
+        languages = []
+        for lang in self.installed_languages:
+            languages.append({
+                'code': lang.code,
+                'name': lang.name,
+                'translations_to': [t.code for t in lang.translations_to]
+            })
+        return languages
+
+
+class ModelManager:
+    """Gestisce download e installazione modelli"""
+    
+    @staticmethod
+    def update_package_index():
+        """Aggiorna indice pacchetti disponibili"""
+        argostranslate.package.update_package_index()
+    
+    @staticmethod
+    def get_available_packages() -> List:
+        """Lista pacchetti scaricabili"""
+        return argostranslate.package.get_available_packages()
+    
+    @staticmethod
+    def install_language_pair(from_code: str, to_code: str, progress_callback=None):
+        """Installa coppia di lingue"""
+        available = argostranslate.package.get_available_packages()
+        
+        package = next(
+            filter(lambda x: x.from_code == from_code and x.to_code == to_code, available),
+            None
+        )
+        
+        if not package:
+            raise ValueError(f"Pacchetto {from_code}→{to_code} non disponibile")
+        
+        logger.info(f"Download pacchetto {from_code}→{to_code}...")
+        if progress_callback:
+            progress_callback(0, 100, f"Download {package.package_version}...")
+        
+        download_path = package.download()
+        
+        if progress_callback:
+            progress_callback(50, 100, "Installazione...")
+        
+        argostranslate.package.install_from_path(download_path)
+        
+        if progress_callback:
+            progress_callback(100, 100, "Completato")
+        
+        logger.info(f"Installato {from_code}→{to_code}")
+```
+
+---
+
+## ✂️ FASE 4: Chunking Documenti Lunghi
+
+### ✅ src/translation/chunker.py
+```python
+from typing import List
+import re
+
+class DocumentChunker:
+    """Split documenti lunghi in chunk ottimali per traduzione"""
+    
+    def __init__(self, max_chunk_size: int = 500):
+        """
+        Args:
+            max_chunk_size: Numero massimo caratteri per chunk
+        """
+        self.max_chunk_size = max_chunk_size
+    
+    def chunk_by_sentences(self, text: str) -> List[str]:
+        """
+        Split per frasi (ottimale per traduzione)
+        
+        Mantiene contesto: non spezza mai a metà frase
+        """
+        # Split per punteggiatura: . ! ? seguito da spazio/newline
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        
+        chunks = []
+        current_chunk = ""
+        
+        for sentence in sentences:
+            # Se aggiungere questa frase supera il limite
+            if len(current_chunk) + len(sentence) > self.max_chunk_size:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = sentence
+                else:
+                    # Frase singola troppo lunga, split forzato
+                    chunks.append(sentence)
+            else:
+                current_chunk += " " + sentence if current_chunk else sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
+    
+    def chunk_by_paragraphs(self, text: str) -> List[str]:
+        """Split per paragrafi (preserva struttura)"""
+        paragraphs = text.split('\n\n')
+        
+        chunks = []
+        current_chunk = ""
+        
+        for para in paragraphs:
+            if not para.strip():
+                continue
+            
+            if len(current_chunk) + len(para) > self.max_chunk_size:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = para
+                else:
+                    # Paragrafo troppo lungo, split per frasi
+                    para_chunks = self.chunk_by_sentences(para)
+                    chunks.extend(para_chunks)
+            else:
+                current_chunk += "\n\n" + para if current_chunk else para
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
+    
+    def chunk_document_pages(self, pages_data: List[dict]) -> List[dict]:
+        """
+        Chunk documento estratto da PDF/DOCX
+        Preserva metadati pagina
+        """
+        chunked_pages = []
+        
+        for page_data in pages_data:
+            text = page_data['text']
+            
+            if len(text) <= self.max_chunk_size:
+                # Pagina intera come singolo chunk
+                chunked_pages.append({
+                    'page_num': page_data['page_num'],
+                    'chunks': [text],
+                    'metadata': page_data
+                })
+            else:
+                # Split pagina in chunk
+                chunks = self.chunk_by_sentences(text)
+                chunked_pages.append({
+                    'page_num': page_data['page_num'],
+                    'chunks': chunks,
+                    'metadata': page_data
+                })
+        
+        return chunked_pages
+```
+
+---
+
+## 🎨 FASE 5: GUI PyQt6 con Progress
+
+### ✅ src/ui/main_window.py
+```python
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QProgressBar, QFileDialog,
+    QComboBox, QTextEdit, QMessageBox, QGroupBox,
+    QSplitter
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
+from pathlib import Path
+import logging
+
+from translation.engine import TranslationEngine, ModelManager
+from workers.translation_worker import TranslationWorker
+
+logger = logging.getLogger(__name__)
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.engine = TranslationEngine()
+        self.input_file = None
+        self.output_folder = None
+        
+        self.init_ui()
+        self.check_languages()
+    
+    def init_ui(self):
+        self.setWindowTitle('Traduttore Documenti Legali - Offline')
+        self.setGeometry(100, 100, 1200, 800)
+        
+        central = QWidget()
+        self.setCentralUI(central)
+        layout = QVBoxLayout(central)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Header
+        header = QLabel('Traduttore Documenti Legali Offline')
+        header.setFont(QFont('Arial', 22, QFont.Weight.Bold))
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(header)
+        
+        subtitle = QLabel('Traduzione privata e sicura - 100% locale')
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet('color: gray; font-size: 13px;')
+        layout.addWidget(subtitle)
+        
+        layout.addSpacing(10)
+        
+        # Selezione lingue
+        lang_group = self._create_language_section()
+        layout.addWidget(lang_group)
+        
+        # File input/output
+        file_group = self._create_file_section()
+        layout.addWidget(file_group)
+        
+        # Preview testo (opzionale)
+        preview_group = self._create_preview_section()
+        layout.addWidget(preview_group)
+        
+        # Progress
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setMinimumHeight(25)
+        layout.addWidget(self.progress_bar)
+        
+        self.status_label = QLabel('')
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label)
+        
+        # Pulsante traduzione
+        self.translate_btn = QPushButton('🌍 Avvia Traduzione')
+        self.translate_btn.setMinimumHeight(50)
+        self.translate_btn.setStyleSheet('''
+            QPushButton {
+                background-color: #10b981;
+                color: white;
+                font-size: 16px;
+                font-weight: bold;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+            }
+            QPushButton:disabled {
+                background-color: #94a3b8;
+            }
+        ''')
+        self.translate_btn.clicked.connect(self.start_translation)
+        self.translate_btn.setEnabled(False)
+        layout.addWidget(self.translate_btn)
+    
+    def _create_language_section(self) -> QGroupBox:
+        """Sezione selezione lingue"""
+        group = QGroupBox("Lingue")
+        layout = QHBoxLayout(group)
+        
+        # Source language
+        layout.addWidget(QLabel('Da:'))
+        self.source_lang = QComboBox()
+        self.source_lang.addItems(['en (Inglese)', 'it (Italiano)', 'es (Spagnolo)', 
+                                    'fr (Francese)', 'de (Tedesco)'])
+        self.source_lang.currentIndexChanged.connect(self._check_ready)
+        layout.addWidget(self.source_lang)
+        
+        # Arrow
+        layout.addWidget(QLabel('→'))
+        
+        # Target language
+        layout.addWidget(QLabel('A:'))
+        self.target_lang = QComboBox()
+        self.target_lang.addItems(['it (Italiano)', 'en (Inglese)', 'es (Spagnolo)', 
+                                    'fr (Francese)', 'de (Tedesco)'])
+        self.target_lang.currentIndexChanged.connect(self._check_ready)
+        layout.addWidget(self.target_lang)
+        
+        # Download models button
+        self.download_btn = QPushButton('📥 Scarica Modelli')
+        self.download_btn.clicked.connect(self.download_models_dialog)
+        layout.addWidget(self.download_btn)
+        
+        layout.addStretch()
+        return group
+    
+    def _create_file_section(self) -> QGroupBox:
+        """Sezione selezione file"""
+        group = QGroupBox("File")
+        layout = QVBoxLayout(group)
+        
+        # Input file
+        h1 = QHBoxLayout()
+        h1.addWidget(QLabel('Documento da tradurre:'))
+        self.input_btn = QPushButton('Seleziona PDF/DOCX')
+        self.input_btn.clicked.connect(self.select_input)
+        h1.addWidget(self.input_btn)
+        self.input_label = QLabel('Nessun file')
+        self.input_label.setStyleSheet('color: gray;')
+        h1.addWidget(self.input_label, 1)
+        layout.addLayout(h1)
+        
+        # Output folder
+        h2 = QHBoxLayout()
+        h2.addWidget(QLabel('Cartella output:'))
+        self.output_btn = QPushButton('Seleziona Cartella')
+        self.output_btn.clicked.connect(self.select_output)
+        h2.addWidget(self.output_btn)
+        self.output_label = QLabel('Nessuna cartella')
+        self.output_label.setStyleSheet('color: gray;')
+        h2.addWidget(self.output_label, 1)
+        layout.addLayout(h2)
+        
+        return group
+    
+    def _create_preview_section(self) -> QGroupBox:
+        """Sezione preview testo (opzionale)"""
+        group = QGroupBox("Anteprima")
+        layout = QVBoxLayout(group)
+        
+        self.preview_text = QTextEdit()
+        self.preview_text.setReadOnly(True)
+        self.preview_text.setMaximumHeight(150)
+        self.preview_text.setPlaceholderText('Preview del documento apparirà qui...')
+        layout.addWidget(self.preview_text)
+        
+        return group
+    
+    def select_input(self):
+        """Seleziona file input"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleziona Documento",
+            "",
+            "Documenti (*.pdf *.docx *.doc)"
+        )
+        
+        if file_path:
+            self.input_file = file_path
+            self.input_label.setText(Path(file_path).name)
+            self.input_label.setStyleSheet('color: black;')
+            
+            # Preview prime righe
+            self._load_preview()
+            self._check_ready()
+    
+    def select_output(self):
+        """Seleziona cartella output"""
+        folder = QFileDialog.getExistingDirectory(self, "Cartella Output")
+        if folder:
+            self.output_folder = folder
+            self.output_label.setText(folder)
+            self.output_label.setStyleSheet('color: black;')
+            self._check_ready()
+    
+    def _load_preview(self):
+        """Carica preview documento"""
+        try:
+            from extraction.pdf_extractor import PDFExtractor
+            from extraction.docx_extractor import DOCXExtractor
+            
+            path = Path(self.input_file)
+            
+            if path.suffix.lower() == '.pdf':
+                extractor = PDFExtractor()
+                text = extractor.extract_simple(self.input_file)
+            else:
+                extractor = DOCXExtractor()
+                text = extractor.extract_simple(self.input_file)
+            
+            # Mostra prime 500 caratteri
+            preview = text[:500] + ("..." if len(text) > 500 else "")
+            self.preview_text.setPlainText(preview)
+            
+        except Exception as e:
+            logger.error(f"Errore preview: {e}")
+            self.preview_text.setPlainText(f"Errore caricamento preview: {e}")
+    
+    def _check_ready(self):
+        """Verifica se pronto per tradurre"""
+        ready = (
+            self.input_file and 
+            self.output_folder and
+            self.source_lang.currentIndex() != self.target_lang.currentIndex()
+        )
+        self.translate_btn.setEnabled(ready)
+    
+    def check_languages(self):
+        """Verifica modelli lingue installati"""
+        languages = self.engine.get_available_languages()
+        
+        if not languages:
+            QMessageBox.warning(
+                self,
+                'Nessun modello installato',
+                'Nessun modello di traduzione trovato.\n\n'
+                'Clicca su "Scarica Modelli" per installare le lingue.'
+            )
+    
+    def download_models_dialog(self):
+        """Dialog download modelli"""
+        from ui.settings_dialog import ModelsDialog
+        dialog = ModelsDialog(self)
+        dialog.exec()
+        
+        # Ricarica engine
+        self.engine._load_installed_languages()
+    
+    def start_translation(self):
+        """Avvia traduzione"""
+        # Parse lingua codes
+        from_code = self.source_lang.currentText().split()[0]  # 'en' da 'en (Inglese)'
+        to_code = self.target_lang.currentText().split()[0]
+        
+        # Verifica coppia disponibile
+        if not self.engine.is_language_pair_available(from_code, to_code):
+            QMessageBox.critical(
+                self,
+                'Modello mancante',
+                f'Modello {from_code}→{to_code} non installato.\n\n'
+                'Scarica il modello dalle impostazioni.'
+            )
+            return
+        
+        # Prepara output path
+        input_path = Path(self.input_file)
+        output_path = Path(self.output_folder) / f"{input_path.stem}_translated{input_path.suffix}"
+        
+        # UI feedback
+        self.translate_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText('Inizializzazione...')
+        
+        # Avvia worker
+        self.worker = TranslationWorker(
+            input_path=str(self.input_file),
+            output_path=str(output_path),
+            from_code=from_code,
+            to_code=to_code,
+            engine=self.engine
+        )
+        
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.translation_finished)
+        self.worker.error.connect(self.translation_error)
+        self.worker.start()
+    
+    def update_progress(self, value: int, message: str):
+        """Aggiorna progress bar"""
+        self.progress_bar.setValue(value)
+        self.status_label.setText(message)
+    
+    def translation_finished(self, output_path: str):
+        """Traduzione completata"""
+        self.progress_bar.setVisible(False)
+        self.status_label.setText('✅ Traduzione completata!')
+        self.status_label.setStyleSheet('color: green; font-weight: bold;')
+        
+        QMessageBox.information(
+            self,
+            'Completato',
+            f'Documento tradotto salvato in:\n{output_path}'
+        )
+        
+        self.translate_btn.setEnabled(True)
+    
+    def translation_error(self, error_msg: str):
+        """Errore traduzione"""
+        self.progress_bar.setVisible(False)
+        self.status_label.setText('❌ Errore')
+        self.status_label.setStyleSheet('color: red; font-weight: bold;')
+        
+        QMessageBox.critical(
+            self,
+            'Errore Traduzione',
+            f'Errore durante la traduzione:\n\n{error_msg}'
+        )
+        
+        self.translate_btn.setEnabled(True)
+```
+
+---
+
+## 🔄 FASE 6: Worker Thread Traduzione
+
+### ✅ src/workers/translation_worker.py
+```python
+from PyQt6.QtCore import QThread, pyqtSignal
+from pathlib import Path
+import logging
+
+from extraction.pdf_extractor import PDFExtractor
+from extraction.docx_extractor import DOCXExtractor
+from translation.chunker import DocumentChunker
+from generation.pdf_generator import PDFGenerator
+from generation.docx_generator import DOCXGenerator
+
+logger = logging.getLogger(__name__)
+
+class TranslationWorker(QThread):
+    """Worker per traduzione in background"""
+    
+    progress = pyqtSignal(int, str)  # (percentuale, messaggio)
+    finished = pyqtSignal(str)       # output_path
+    error = pyqtSignal(str)          # error_message
+    
+    def __init__(self, input_path, output_path, from_code, to_code, engine):
+        super().__init__()
+        self.input_path = Path(input_path)
+        self.output_path = Path(output_path)
+        self.from_code = from_code
+        self.to_code = to_code
+        self.engine = engine
+        self._is_cancelled = False
+    
+    def cancel(self):
+        """Cancella operazione"""
+        self._is_cancelled = True
+    
+    def run(self):
+        """Esegui traduzione completa"""
+        try:
+            # FASE 1: Estrazione testo (0-20%)
+            self.progress.emit(0, 'Estrazione testo dal documento...')
+            pages_data = self._extract_text()
+            
+            if self._is_cancelled:
+                return
+            
+            # FASE 2: Chunking (20-25%)
+            self.progress.emit(20, 'Preparazione testo per traduzione...')
+            chunks = self._chunk_document(pages_data)
+            total_chunks = sum(len(page['chunks']) for page in chunks)
+            
+            if self._is_cancelled:
+                return
+            
+            # FASE 3: Traduzione (25-85%)
+            self.progress.emit(25, f'Traduzione in corso ({total_chunks} segmenti)...')
+            translated_pages = self._translate_chunks(chunks, total_chunks)
+            
+            if self._is_cancelled:
+                return
+            
+            # FASE 4: Generazione output (85-100%)
+            self.progress.emit(85, 'Generazione documento tradotto...')
+            self._generate_output(translated_pages)
+            
+            self.progress.emit(100, 'Completato!')
+            self.finished.emit(str(self.output_path))
+            
+        except Exception as e:
+            logger.exception("Errore traduzione")
+            self.error.emit(str(e))
+    
+    def _extract_text(self):
+        """Estrae testo da PDF o DOCX"""
+        if self.input_path.suffix.lower() == '.pdf':
+            extractor = PDFExtractor()
+            return extractor.extract_text_with_layout(
+                str(self.input_path),
+                progress_callback=lambda p, t, m: self.progress.emit(
+                    int(5 + (p/t) * 15), m
+                )
+            )
+        else:
+            extractor = DOCXExtractor()
+            pages = extractor.extract_with_structure(
+                str(self.input_path),
+                progress_callback=lambda p, t, m: self.progress.emit(
+                    int(5 + (p/t) * 15), m
+                )
+            )
+            # Converti formato DOCX in "pagine" simulate
+            return [{'page_num': 1, 'text': '\n'.join([e['text'] for e in pages]), 'elements': pages}]
+    
+    def _chunk_document(self, pages_data):
+        """Split documento in chunk"""
+        chunker = DocumentChunker(max_chunk_size=500)
+        return chunker.chunk_document_pages(pages_data)
+    
+    def _translate_chunks(self, chunked_pages, total_chunks):
+        """Traduci tutti i chunk"""
+        translated_pages = []
+        chunk_counter = 0
+        
+        for page_data in chunked_pages:
+            if self._is_cancelled:
+                break
+            
+            page_chunks = page_data['chunks']
+            
+            # Traduci chunk della pagina
+            translated_chunks = []
+            for chunk in page_chunks:
+                if self._is_cancelled:
+                    break
+                
+                chunk_counter += 1
+                progress = 25 + int((chunk_counter / total_chunks) * 60)
+                
+                self.progress.emit(
+                    progress,
+                    f'Traduzione pagina {page_data["page_num"]} '
+                    f'({chunk_counter}/{total_chunks} segmenti)'
+                )
+                
+                translated = self.engine.translate_text(
+                    chunk,
+                    self.from_code,
+                    self.to_code
+                )
+                translated_chunks.append(translated)
+            
+            # Riunisci chunk tradotti
+            translated_pages.append({
+                'page_num': page_data['page_num'],
+                'text': ' '.join(translated_chunks),
+                'metadata': page_data.get('metadata', {})
+            })
+        
+        return translated_pages
+    
+    def _generate_output(self, translated_pages):
+        """Genera documento output"""
+        if self.output_path.suffix.lower() == '.pdf':
+            generator = PDFGenerator()
+            generator.create_pdf(
+                translated_pages,
+                str(self.output_path),
+                progress_callback=lambda p, m: self.progress.emit(
+                    85 + int(p * 0.15), m
+                )
+            )
+        else:
+            generator = DOCXGenerator()
+            generator.create_docx(
+                translated_pages,
+                str(self.output_path),
+                progress_callback=lambda p, m: self.progress.emit(
+                    85 + int(p * 0.15), m
+                )
+            )
+```
+
+---
+
+## 📦 FASE 7: Generazione Output
+
+### ✅ src/generation/pdf_generator.py
+```python
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from typing import List, Dict
+import logging
+
+logger = logging.getLogger(__name__)
+
+class PDFGenerator:
+    """Genera PDF da testo tradotto"""
+    
+    def __init__(self):
+        self.styles = getSampleStyleSheet()
+        
+        # Style custom per testo legale
+        self.styles.add(ParagraphStyle(
+            name='LegalText',
+            parent=self.styles['Normal'],
+            fontSize=11,
+            leading=14,
+            spaceBefore=6,
+            spaceAfter=6,
+            alignment=4  # Justify
+        ))
+    
+    def create_pdf(self, pages_data: List[Dict], output_path: str, progress_callback=None):
+        """
+        Crea PDF da pagine tradotte
+        
+        Args:
+            pages_data: [{page_num, text, metadata}, ...]
+        """
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            rightMargin=72,
+            leftMargin=72,
+            topMargin=72,
+            bottomMargin=18
+        )
+        
+        story = []
+        total_pages = len(pages_data)
+        
+        for i, page_data in enumerate(pages_data):
+            if progress_callback:
+                progress_callback(
+                    (i / total_pages) * 100,
+                    f"Generazione pagina {i+1}/{total_pages}"
+                )
+            
+            # Testo pagina
+            text = page_data['text']
+            
+            # Split in paragrafi
+            paragraphs = text.split('\n\n')
+            
+            for para_text in paragraphs:
+                if para_text.strip():
+                    para = Paragraph(para_text, self.styles['LegalText'])
+                    story.append(para)
+                    story.append(Spacer(1, 0.2*inch))
+            
+            # Page break (tranne ultima pagina)
+            if i < total_pages - 1:
+                story.append(PageBreak())
+        
+        # Build PDF
+        if progress_callback:
+            progress_callback(90, "Finalizzazione PDF...")
+        
+        doc.build(story)
+        
+        logger.info(f"PDF generato: {output_path}")
+```
+
+### ✅ src/generation/docx_generator.py
+```python
+from docx import Document
+from docx.shared import Pt, Inches
+from typing import List, Dict
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DOCXGenerator:
+    """Genera DOCX da testo tradotto"""
+    
+    def create_docx(self, pages_data: List[Dict], output_path: str, progress_callback=None):
+        """
+        Crea DOCX da pagine tradotte
+        """
+        doc = Document()
+        
+        # Setup margini
+        sections = doc.sections
+        for section in sections:
+            section.top_margin = Inches(1)
+            section.bottom_margin = Inches(1)
+            section.left_margin = Inches(1)
+            section.right_margin = Inches(1)
+        
+        total_pages = len(pages_data)
+        
+        for i, page_data in enumerate(pages_data):
+            if progress_callback:
+                progress_callback(
+                    (i / total_pages) * 100,
+                    f"Generazione pagina {i+1}/{total_pages}"
+                )
+            
+            text = page_data['text']
+            
+            # Split in paragrafi
+            paragraphs = text.split('\n\n')
+            
+            for para_text in paragraphs:
+                if para_text.strip():
+                    p = doc.add_paragraph(para_text)
+                    
+                    # Formattazione
+                    p.style = 'Normal'
+                    for run in p.runs:
+                        run.font.size = Pt(11)
+            
+            # Page break (tranne ultima)
+            if i < total_pages - 1:
+                doc.add_page_break()
+        
+        if progress_callback:
+            progress_callback(90, "Salvataggio DOCX...")
+        
+        doc.save(output_path)
+        
+        logger.info(f"DOCX generato: {output_path}")
+```
+
+---
+
+## 📦 FASE 8: Packaging PyInstaller
+
+### ✅ build.spec
+```python
+# -*- mode: python ; coding: utf-8 -*-
+
+block_cipher = None
+
+# Path ai modelli Argos Translate
+import argostranslate
+import site
+
+argos_path = None
+for path in site.getsitepackages():
+    test_path = os.path.join(path, 'argostranslate')
+    if os.path.exists(test_path):
+        argos_path = test_path
+        break
+
+a = Analysis(
+    ['src/main.py'],
+    pathex=[],
+    binaries=[],
+    datas=[
+        ('resources/icons', 'resources/icons'),
+        ('resources/styles', 'resources/styles'),
+        ('glossaries', 'glossaries'),
+        # Include modelli Argos Translate
+        (argos_path, 'argostranslate') if argos_path else None,
+        # Package dir dei modelli installati
+        (os.path.expanduser('~/.local/share/argos-translate'), 'argos-translate-packages'),
+    ],
+    hiddenimports=[
+        'argostranslate',
+        'argostranslatefiles',
+        'fitz',  # PyMuPDF
+        'docx',
+        'reportlab',
+        'pdfplumber',
+        'mammoth',
+        'langdetect'
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'torch',  # Se non usi Hugging Face
+        'tensorflow',
+        'matplotlib',
+        'pandas'  # Se non necessari
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='LegalTranslator',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon='resources/icons/app.ico'
+)
+```
+
+### ✅ Build
+```bash
+# Build con spec file
+pyinstaller build.spec
+
+# Output: dist/LegalTranslator.exe (Windows)
+# o dist/LegalTranslator (Linux/Mac)
+```
+
+---
+
+## ⚠️ ERRORI TIPICI DA EVITARE (Specifici Traduzione)
+
+### 🔴 ERRORE 1: Tradurre tutto in un colpo (OOM)
+```python
+# MALE per documenti lunghi
+full_text = extract_all_text(document_40_pages)
+translated = translate(full_text)  # Out of memory!
+```
+
+**✅ SOLUZIONE: Chunking obbligatorio**
+```python
+chunks = chunker.chunk_by_sentences(full_text)
+translated_chunks = []
+for chunk in chunks:
+    translated_chunks.append(translate(chunk))
+translated_text = ' '.join(translated_chunks)
+```
+
+---
+
+### 🔴 ERRORE 2: Perdere contesto tra chunk
+```python
+# Spezza a metà concetto legale
+chunk1 = "Il contratto prevede che"
+chunk2 = "la parte venditrice consegni entro 30 giorni"
+# Tradotti separatamente perdono coerenza
+```
+
+**✅ SOLUZIONE: Overlap o sentence-aware chunking**
+```python
+class SmartChunker:
+    def chunk_with_overlap(self, text, max_size=500, overlap=50):
+        """Overlap tra chunk per preservare contesto"""
+        chunks = []
+        start = 0
+        
+        while start < len(text):
+            end = start + max_size
+            
+            # Trova fine frase vicina
+            if end < len(text):
+                end = text.rfind('.', start, end) + 1
+            
+            chunk = text[start:end]
+            chunks.append(chunk)
+            
+            # Overlap
+            start = end - overlap if end - overlap > start else end
+        
+        return chunks
+```
+
+---
+
+### 🔴 ERRORE 3: Non gestire terminologia legale
+```python
+# "Force majeure" tradotto letteralmente perde significato legale
+translated = translate("Force majeure clause")
+# Output generico invece di termine tecnico corretto
+```
+
+**✅ SOLUZIONE: Glossario custom**
+```python
+class LegalTranslator:
+    def __init__(self):
+        self.glossary = {
+            'force majeure': 'forza maggiore',
+            'habeas corpus': 'habeas corpus',  # Non tradurre
+            'in camera': 'in camera caritatis',
+            'pro bono': 'pro bono'
+        }
+    
+    def translate_with_glossary(self, text):
+        """Preserva termini legali"""
+        # Proteggi termini glossario
+        protected = {}
+        for term, translation in self.glossary.items():
+            if term.lower() in text.lower():
+                placeholder = f"__TERM_{len(protected)}__"
+                protected[placeholder] = translation
+                text = text.replace(term, placeholder)
+        
+        # Traduci
+        translated = self.engine.translate(text)
+        
+        # Ripristina termini
+        for placeholder, term in protected.items():
+            translated = translated.replace(placeholder, term)
+        
+        return translated
+```
+
+---
+
+### 🔴 ERRORE 4: Non preservare formattazione
+```python
+# Perde grassetto, corsivo, liste numerate
+extracted_text = extract_plain_text(docx)
+translated = translate(extracted_text)
+# Output senza formattazione originale
+```
+
+**✅ SOLUZIONE: Preserva markup**
+```python
+def extract_with_format(docx_path):
+    """Estrai con tag formattazione"""
+    doc = Document(docx_path)
+    structured = []
+    
+    for para in doc.paragraphs:
+        para_data = {
+            'text': para.text,
+            'style': para.style.name,
+            'runs': []
+        }
+        
+        for run in para.runs:
+            para_data['runs'].append({
+                'text': run.text,
+                'bold': run.bold,
+                'italic': run.italic,
+                'underline': run.underline
+            })
+        
+        structured.append(para_data)
+    
+    return structured
+
+def reconstruct_with_format(structured_data, output_path):
+    """Ricostruisci con formattazione"""
+    doc = Document()
+    
+    for para_data in structured_data:
+        p = doc.add_paragraph()
+        p.style = para_data['style']
+        
+        for run_data in para_data['runs']:
+            run = p.add_run(run_data['text'])
+            run.bold = run_data['bold']
+            run.italic = run_data['italic']
+            run.underline = run_data['underline']
+    
+    doc.save(output_path)
+```
+
+---
+
+### 🔴 ERRORE 5: Non validare qualità traduzione
+```python
+# Nessun check su output
+translated = translate(text)
+save(translated)  # Potrebbero esserci errori grossolani
+```
+
+**✅ SOLUZIONE: Quality checks**
+```python
+class TranslationValidator:
+    def validate(self, original, translated):
+        """Controlla qualità base traduzione"""
+        issues = []
+        
+        # Check 1: Lunghezza ragionevole (±50%)
+        ratio = len(translated) / len(original)
+        if ratio < 0.5 or ratio > 1.5:
+            issues.append(f"Lunghezza anomala: {ratio:.2f}x")
+        
+        # Check 2: Numeri preservati
+        import re
+        orig_numbers = set(re.findall(r'\d+', original))
+        trans_numbers = set(re.findall(r'\d+', translated))
+        if orig_numbers != trans_numbers:
+            issues.append(f"Numeri diversi: {orig_numbers} vs {trans_numbers}")
+        
+        # Check 3: Punteggiatura simile
+        orig_punct = original.count('.') + original.count(',')
+        trans_punct = translated.count('.') + translated.count(',')
+        if abs(orig_punct - trans_punct) > 5:
+            issues.append("Punteggiatura molto diversa")
+        
+        # Check 4: Parole non tradotte (troppo simili)
+        from difflib import SequenceMatcher
+        similarity = SequenceMatcher(None, original, translated).ratio()
+        if similarity > 0.9:
+            issues.append("Testo quasi identico - possibile mancata traduzione")
+        
+        return issues
+```
+
+---
+
+### 🔴 ERRORE 6: Modelli non ottimizzati per legale
+```python
+# Usa modelli generici per testi legali
+translator = GenericTranslator()  # Non capisce terminologia
+```
+
+**✅ SOLUZIONE: Fine-tuning o glossari estesi**
+```python
+# Crea glossario legale completo
+legal_glossary = load_json('glossaries/legal_en_it.json')
+
+# Esempio glossary structure:
+{
+    "contract law": {
+        "it": "diritto contrattuale",
+        "context": "general"
+    },
+    "breach of contract": {
+        "it": "inadempimento contrattuale",
+        "context": "litigation"
+    },
+    "plaintiff": {
+        "it": "attore",
+        "context": "court"
+    },
+    "defendant": {
+        "it": "convenuto",
+        "context": "court"
+    }
+}
+```
+
+---
+
+### 🔴 ERRORE 7: Non gestire timeout per documenti enormi
+```python
+# Traduzione 100 pagine senza timeout
+translate_all(huge_document)  # Può bloccarsi ore
+```
+
+**✅ SOLUZIONE: Timeout e resume capability**
+```python
+import time
+from pathlib import Path
+import json
+
+class ResumableTranslator:
+    def __init__(self, checkpoint_file='translation_progress.json'):
+        self.checkpoint_file = checkpoint_file
+    
+    def translate_with_checkpoints(self, chunks, max_time_seconds=3600):
+        """Traduce con checkpoint ogni N chunk"""
+        start_time = time.time()
+        
+        # Carica progress esistente
+        progress = self._load_checkpoint()
+        translated = progress.get('translated', [])
+        start_index = len(translated)
+        
+        try:
+            for i, chunk in enumerate(chunks[start_index:], start_index):
+                # Check timeout
+                if time.time() - start_time > max_time_seconds:
+                    self._save_checkpoint(translated, i)
+                    raise TimeoutError(f"Timeout dopo {i} chunk. Progress salvato.")
+                
+                trans = self.translate(chunk)
+                translated.append(trans)
+                
+                # Checkpoint ogni 10 chunk
+                if i % 10 == 0:
+                    self._save_checkpoint(translated, i)
+            
+            # Cleanup checkpoint
+            Path(self.checkpoint_file).unlink(missing_ok=True)
+            return translated
+            
+        except Exception as e:
+            self._save_checkpoint(translated, len(translated))
+            raise
+    
+    def _save_checkpoint(self, translated, index):
+        with open(self.checkpoint_file, 'w') as f:
+            json.dump({'translated': translated, 'index': index}, f)
+    
+    def _load_checkpoint(self):
+        if Path(self.checkpoint_file).exists():
+            with open(self.checkpoint_file) as f:
+                return json.load(f)
+        return {}
+```
+
+---
+
+## 📋 CHECKLIST COMPLETA
+
+### Setup 
+- [ ] Virtual environment
+- [ ] Installa PyQt6, PyMuPDF, python-docx
+- [ ] Installa argostranslate
+- [ ] Download modelli lingue necessari (en-it, it-en, etc)
+- [ ] Test import e traduzione base
+
+### Estrazione 
+- [ ] PDFExtractor con layout
+- [ ] DOCXExtractor con struttura
+- [ ] Test con documenti reali 40+ pagine
+- [ ] Gestione encoding
+
+### Traduzione 
+- [ ] TranslationEngine con Argos
+- [ ] DocumentChunker intelligente
+- [ ] Glossario terminologia legale
+- [ ] Cache traduzioni (optional)
+- [ ] Quality validation
+
+### GUI 
+- [ ] MainWindow con selezione lingue
+- [ ] File input/output dialogs
+- [ ] Preview documento
+- [ ] Progress bar dettagliata
+- [ ] Settings per download modelli
+
+### Worker 
+- [ ] TranslationWorker thread
+- [ ] Progress signals
+- [ ] Cancellation support
+- [ ] Error handling robusto
+
+### Output 
+- [ ] PDFGenerator con formattazione
+- [ ] DOCXGenerator preservando stile
+- [ ] Test qualità output
+
+### Testing 
+- [ ] Documenti 1 pagina
+- [ ] Documenti 40+ pagine
+- [ ] Caratteri speciali
+- [ ] Tabelle e liste
+- [ ] Varie coppie lingue
+- [ ] Stress test memoria
+
+### Packaging 
+- [ ] build.spec con modelli
+- [ ] Test .exe Windows
+- [ ] Dimensione finale <500MB
+- [ ] Installer con modelli base inclusi
+
+
+
+---
+
+## 🎯 REPO ESSENZIALI
+
+### Core
+1. **[`argosopentech/argos-translate`](https://github.com/argosopentech/argos-translate)** ⭐ NMT offline
+2. **[`PyQt6`](https://www.riverbankcomputing.com/software/pyqt/)** - GUI nativa
+3. **[`pymupdf/PyMuPDF`](https://github.com/pymupdf/PyMuPDF)** - PDF
+4. **[`python-openxml/python-docx`](https://github.com/python-openxml/python-docx)** - DOCX
+
+### Alternative Translation
+5. **[`Helsinki-NLP/Opus-MT`](https://github.com/Helsinki-NLP/Opus-MT)** - MarianMT models
+6. **[`facebookresearch/NLLB`](https://github.com/facebookresearch/fairseq/tree/nllb)** - 200 lingue (pesante)
+7. **[`LibreTranslate/LibreTranslate`](https://github.com/LibreTranslate/LibreTranslate)** - Server locale
+
+### Utilities
+8. **[`jbarlow83/pdfplumber`](https://github.com/jbarlow83/pdfplumber)** - Estrazione avanzata
+9. **[`Belval/pdf2image`](https://github.com/Belval/pdf2image)** - PDF to images
+10. **[`smalot/pdfparser`](https://github.com/smalot/pdfparser)** - Parser PHP (alternativa)
+
+### Output Generation
+11. **[`rst2pdf/rst2pdf`](https://github.com/rst2pdf/rst2pdf)** - ReStructuredText to PDF
+12. **[`xhtml2pdf/xhtml2pdf`](https://github.com/xhtml2pdf/xhtml2pdf)** - HTML to PDF
+
+---
+
+## 💡 TIPS FINALI
+
+1. **Start Small**: Inizia con 1 coppia lingue (en-it)
+2. **Cache**: Salva traduzioni di chunk comuni (clausole standard)
+3. **Parallel**: Per CPU multi-core, parallelizza traduzione chunk
+4. **Preview**: Mostra prime righe tradotte prima di salvare tutto
+5. **Backup**: Salva sempre documento originale
+6. **Logs**: Traccia tutti gli errori per debug cliente
+
+Buon lavoro! 🚀

@@ -1,0 +1,45 @@
+{
+  "force majeure": {
+    "it": "forza maggiore",
+    "context": "contract"
+  },
+  "habeas corpus": {
+    "it": "habeas corpus",
+    "context": "litigation",
+    "note": "Do not translate - legal term"
+  },
+  "plaintiff": {
+    "it": "attore",
+    "context": "court"
+  },
+  "defendant": {
+    "it": "convenuto",
+    "context": "court"
+  },
+  "breach of contract": {
+    "it": "inadempimento contrattuale",
+    "context": "contract"
+  },
+  "due diligence": {
+    "it": "due diligence",
+    "context": "corporate",
+    "note": "Keep in English - standard term"
+  },
+  "in good faith": {
+    "it": "in buona fede",
+    "context": "general"
+  },
+  "jurisdiction": {
+    "it": "giurisdizione",
+    "context": "court"
+  },
+  "liability": {
+    "it": "responsabilità",
+    "context": "general"
+  },
+  "indemnification": {
+    "it": "indennizzo",
+    "context": "contract"
+  }
+}
+

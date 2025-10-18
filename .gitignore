@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Application specific
+config.json
+cache/
+temp/
+*.tmp
+
+# Translation models (optional - puoi committarli se vuoi includerli)
+models/
+~/.local/share/argos-translate/
+
+# Output files
+output/
+*_translated.*
+
+# Test files
+test_documents/
+tests/test_output/
+
+# Documents demo (non pubblicare)
+documents demo/
+
+# OS
+Thumbs.db
+.DS_Store
+

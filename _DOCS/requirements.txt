@@ -1,0 +1,26 @@
+# Traduttore Documenti Legali Offline
+# Dipendenze principali
+
+# Interfaccia utente
+PyQt6>=6.0.0
+
+# Elaborazione PDF
+PyMuPDF>=1.23.0
+
+# Generazione documenti
+python-docx>=0.8.11
+
+# Traduzione offline
+argostranslate>=1.9.0
+
+# OCR per documenti scannerizzati
+easyocr>=1.7.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Elaborazione immagini
+numpy>=1.24.0
+scikit-image>=0.20.0
+
+# Utility
+pathlib2>=2.3.7
